@@ -491,11 +491,12 @@ def assign_pitcher_clusters(df_today, pitch_models, pitcher_model,
     return pitcher_features_final.reset_index()
 
 
-def prep_test_train(df, numerical_columns, categorical_columns,
-                    lookback_days=300,
-                    start_year=None, end_year=None,
-                    pitch_clusters_per_type=5,
-                    pitcher_clusters=10):
+def run_cluster(numerical_columns, categorical_columns, lookback_days=300,
+                start_year=None, end_year=None,
+                pitch_clusters_per_type=5, pitcher_clusters=10):
+
+    df = utils.grab_data('data/statcast', start_year - 1, end_year)
+
     df["game_date"] = pd.to_datetime(df["game_date"])
     all_dates = sorted(df["game_date"].unique())
 
@@ -548,6 +549,127 @@ def prep_test_train(df, numerical_columns, categorical_columns,
     return feature_panel
 
 
+def prep_test_train(start_year=None, end_year=None,
+                    lookback_days=300,
+                    pitcher_clusters=10):
+
+    # feat = comparatively_speaking(
+    #     start_year=2022, end_year=2024, lookback=lookback_days,
+    #     pitcher_positive_stats=[
+    #         'weighted_is_k', 'weighted_whiff_pct', 'weighted_strike_looking_pct',
+    #     ],
+    #     batter_positive_stats=[
+    #         'weighted_is_hit', 'weighted_launch_speed',
+    #     ]
+    # ).dropna()
+    #
+    # numerical_columns = ["release_spin_rate", "effective_speed", "pfx_x", "pfx_z"]
+    # categorical_columns = ["p_throws"]
+    # feature_panel = run_cluster(
+    #     numerical_columns, categorical_columns, lookback_days=lookback_days,
+    #     start_year=start_year, end_year=end_year, pitcher_clusters=pitcher_clusters
+    # )
+    # feature_panel['pitcher'] = feature_panel['player_name'].apply(lambda x: f"{x.split(', ')[1][0]}. {x.split(', ')[0]}")
+    # feature_panel['game_date'] = feature_panel['feature_date'].dt.date
+    #
+    # feat = pd.merge(feat, feature_panel[['game_date', 'pitcher', 'pitcher_cluster']], on=['game_date','pitcher'], how='left')
+
+    feat = pd.read_parquet('data/calc/feat.parquet')
+    feature_panel = pd.read_parquet('data/test/feature_panel.parquet')
+    feature_panel['pitcher'] = feature_panel['player_name'].apply(
+        lambda x: f"{x.split(', ')[1][0]}. {x.split(', ')[0]}")
+    feature_panel['game_date'] = feature_panel['feature_date'].dt.date
+    feat = pd.merge(feat, feature_panel[['game_date', 'pitcher', 'pitcher_cluster']], on=['game_date', 'pitcher'],
+                    how='left')
+
+    ### get target col, strikeouts
+    years = range(start_year - 1, end_year + 1)
+    all_stats = []
+    for yr in years:
+        fpath = f"data/statcast/statcast_{yr}.parquet"
+        if os.path.isfile(fpath):
+            all_stats.append(pd.read_parquet(fpath))
+    if not all_stats:
+        print("No statcast data found.")
+        return pd.DataFrame()
+
+    stats = pd.concat(all_stats, ignore_index=True)
+    stats["game_date"] = pd.to_datetime(stats["game_date"]).dt.date
+
+    # Mark at-bat groupings
+    stats["is_hit"] = stats["events"].isin(["single", "double", "triple", "home_run", "inside_the_park_hr"])
+    stats["is_k"] = stats["events"].isin(["strikeout"])
+    grouped_events = (
+        stats.dropna(subset=["events"])  # only rows w/ actual event
+        .groupby(["player_name", "game_date", "p_throws", "inning_topbot", "game_pk", "home_team", "away_team"], dropna=False)
+        .agg({"is_hit":"sum","is_k":"sum","events":"count","launch_speed":"mean"}).reset_index()
+    )
+    grouped_events['pitcher'] = grouped_events['player_name'].apply(
+        lambda x: f"{x.split(', ')[1][0]}. {x.split(', ')[0]}")
+    k_s = (grouped_events[['game_date','game_pk','home_team','away_team','pitcher','is_k']]
+           .sort_values(by=['game_date','home_team'])
+           .drop_duplicates())
+
+    ### extra stats
+    cols = ['game_date','game_pk','game_type','inning_topbot','player_name','home_team','away_team','pitcher_days_since_prev_game']
+
+    top = stats[stats.inning_topbot == 'Top'][cols].drop_duplicates()
+    top['pitch_team'] = top['home_team']
+    top['bat_team'] = top['away_team']
+
+    bot = stats[stats.inning_topbot == 'Bot'][cols].drop_duplicates()
+    bot['pitch_team'] = bot['away_team']
+    bot['bat_team'] = bot['home_team']
+
+    m = pd.concat([top, bot]).sort_values(by=['game_date', 'home_team']).drop_duplicates().reset_index(drop=True)
+    m['pitcher'] = m['player_name'].apply(lambda x: f"{x.split(', ')[1][0]}. {x.split(', ')[0]}")
+    m['pitch_is_home'] = m['pitch_team'] == m['home_team']
+    m.drop(columns=['player_name','inning_topbot'], inplace=True)
+
+    feat = pd.merge(feat,m,on=['game_date','game_pk','home_team','away_team','pitcher'],how='left')
+    feat = pd.merge(feat,k_s,on=['game_date','game_pk','home_team','away_team','pitcher'],how='left').dropna()
+    utils.pdf(feat.tail(3))
+
+    # ### sched, need sched
+    # sched = []
+    # for i in range(feat['game_date'].min().year, feat['game_date'].max().year+1):
+    #     sched += [pd.read_csv(f'data/sched/{i}schedule.csv')]
+    # sched = pd.concat(sched)
+    # utils.pdf(sched.tail(10))
+
+    # Set your target and feature columns
+    target_col = 'is_k'
+
+    categorical_cols = [
+        'pitcher_cluster','pitch_is_home','bat_team','game_type'
+    ]
+    feat[categorical_cols] = feat[categorical_cols].fillna('Unknown')
+    feat = pd.get_dummies(feat, columns=categorical_cols, drop_first=True)
+
+    drop_cols = ['game_pk','game_date', 'home_team','away_team', 'pitcher', 'player_name', 'pitch_team']
+    feature_cols = [col for col in feat.columns if col not in drop_cols + [target_col]]
+
+    # Step 3: Sort by date
+    feat = feat.sort_values("game_date")
+    for col in feat.columns:
+        if pd.api.types.is_integer_dtype(feat[col]):
+            feat[col] = feat[col].fillna(0).astype(np.int64)
+
+    # Step 4: Time-based split
+    split_frac = 0.8
+    split_idx = int(len(feat) * split_frac)
+
+    train_df = feat.iloc[:split_idx]
+    test_df = feat.iloc[split_idx:]
+
+    # Step 5: Build final arrays
+    X_train = train_df[feature_cols].values.astype(np.float32)
+    y_train = train_df[target_col].values.astype(np.float32)
+    X_test = test_df[feature_cols].values.astype(np.float32)
+    y_test = test_df[target_col].values.astype(np.float32)
+
+    return X_train, y_train, X_test, y_test, train_df, test_df
+
 if __name__ == "__main__":
     # Example usage
     # plot_weight_decay()  # see the logistic shape
@@ -555,37 +677,7 @@ if __name__ == "__main__":
     start_year, end_year = 2022, 2024
     lookback = 300
 
-    feat = comparatively_speaking(
-        start_year=2022, end_year=2024, lookback=lookback,
-        pitcher_positive_stats= [
-            'weighted_is_k', 'weighted_whiff_pct', 'weighted_strike_looking_pct',
-        ],
-        batter_positive_stats= [
-            'weighted_is_hit', 'weighted_launch_speed',
-        ]
-    ).dropna()
-
-    feat.to_parquet("data/calc/feat.parquet")
-    feat = pd.read_parquet('data/calc/feat.parquet')
-
-    utils.pdf(feat.describe())
-    utils.pdf(feat.head(10))
-    utils.pdf(feat.tail(10))
-
-
-    df = utils.grab_data('data/statcast', start_year-1, end_year)
-    utils.pdf(df.head(5))
-    print(f"Data is {len(df)} rows deep.")
-    numerical_columns = ["release_spin_rate", "effective_speed", "pfx_x", "pfx_z"]
-    categorical_columns = ["p_throws"]
-    feature_panel = prep_test_train(
-        df, numerical_columns, categorical_columns, lookback_days=lookback,
-        start_year=start_year, end_year=end_year, pitcher_clusters=16
+    prep_test_train(
+        start_year=start_year, end_year=end_year,
+        lookback_days=lookback, pitcher_clusters=16
     )
-    utils.pdf(feature_panel.tail(10))
-
-
-    feature_panel.to_parquet('data/test/feature_panel.parquet')
-    feature_panel = pd.read_parquet('data/test/feature_panel.parquet')
-    feature_panel.to_csv('data/test/feature_panel.csv', index=False)
-    utils.pdf(feature_panel[['feature_date','player_name','pitcher_cluster']].tail(200))
