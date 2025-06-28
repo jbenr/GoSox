@@ -19,7 +19,9 @@ def run():
 
 
 if __name__ == "__main__":
-    data_pullson.pull_sched(start_year=date.today().year, end_year=date.today().year)
-    data_pullson.pull_the_stat_dat(start_year=date.today().year, end_year=date.today().year)
+    # data_pullson.pull_sched(start_year=date.today().year, end_year=date.today().year)
+    # data_pullson.pull_the_stat_dat(start_year=date.today().year, end_year=date.today().year)
 
+    df = pd.read_parquet("data/statcast/statcast_2025.parquet")
+    df.tail(3)
     # pred = run()

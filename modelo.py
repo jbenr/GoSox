@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 class RNNPredictor(nn.Module):
-    def __init__(self, input_size, hidden_size=64, num_layers=1):
+    def __init__(self, input_size, hidden_size=16, num_layers=1):
         super(RNNPredictor, self).__init__()
         self.rnn = nn.RNN(input_size, hidden_size, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_size, 1)
@@ -29,15 +29,15 @@ def modelo(X_train, y_train, X_test, y_test):
     y_test_tensor = torch.tensor(y_test, dtype=torch.float32).unsqueeze(-1)
 
     train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
 
     input_size = X_train.shape[-1]
     model = RNNPredictor(input_size)
 
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 
-    for epoch in range(20):
+    for epoch in range(100):
         model.train()
         running_loss = 0.0
         for batch_X, batch_y in train_loader:
