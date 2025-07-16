@@ -5,8 +5,8 @@ import sys
 import time
 
 
-def pdf(df):
-    print(tabulate(df, headers='keys', tablefmt=tabulate_formats[2]))
+def pdf(df, format=2):
+    print(tabulate(df, headers='keys', tablefmt=tabulate_formats[format]))
 
 
 def make_dir(dir):

@@ -103,9 +103,8 @@ def weighted_stats_for_df(df, max_lookback_days=300, sum_cols=None, ratio_pairs=
 
 def pitcher_and_offense_crunch(start_year=2022,end_year=2024, only_starters=True,
                                statcast_dir="data/statcast", max_lookback_days=300):
-
     ### Data Pull ###
-    yrs_lookback = max_lookback_days%365
+    yrs_lookback = max_lookback_days//365
     years = range(start_year - yrs_lookback, end_year + 1)
     all_stats = []
     for yr in years:
@@ -126,13 +125,23 @@ def pitcher_and_offense_crunch(start_year=2022,end_year=2024, only_starters=True
     stats["is_hit"] = stats["events"].isin(["single", "double", "triple", "home_run", "inside_the_park_hr"])
     stats["is_k"] = stats["events"].isin(["strikeout"])
 
+    # Balls strikes
+    stats['strike'] = stats['description'].isin([
+        'swinging_strike', 'foul', 'called_strike', 'foul_tip', 'swinging_strike_blocked',
+        "foul_bunt", "missed_bunt", "bunt_foul_tip"
+    ]).astype(int)
+    stats['ball'] = (stats['description'] == 'ball').astype(int)
+    stats['real_pitch'] = stats['ball']+stats['strike']
+
     # Mark pitch-based groupings
     stats["is_swing"] = stats["description"].isin([
         "swinging_strike", "swinging_strike_blocked", "foul",
-        "foul_tip", "hit_into_play", "foul_bunt", "missed_bunt"
+        "foul_tip", "hit_into_play",
+        "foul_bunt", "missed_bunt", "bunt_foul_tip"
     ])
     stats["is_whiff"] = stats["description"].isin(["swinging_strike", "swinging_strike_blocked", "missed_bunt"])
     stats["is_strike_looking"] = stats["description"].isin(["called_strike"])
+    utils.pdf(stats.tail(2))
 
     #############################
     # 2) PITCHER-level aggregator
@@ -149,10 +158,14 @@ def pitcher_and_offense_crunch(start_year=2022,end_year=2024, only_starters=True
     # Summarize pitches
     grouped_pitches = (
         stats.groupby(["player_name", "game_date", "p_throws", "inning_topbot", "game_pk", "home_team", "away_team"], dropna=False)
-        .agg(pitches=("pitch_type", "size"),
-             sum_swing=("is_swing", "sum"),
-             sum_whiff=("is_whiff", "sum"),
-             sum_looking=("is_strike_looking","sum")).reset_index())
+        .agg(
+            sum_real_pitch=("real_pitch", "sum"),
+            sum_swing=("is_swing", "sum"),
+            sum_whiff=("is_whiff", "sum"),
+            sum_looking=("is_strike_looking","sum"),
+            sum_strike=("strike","sum"),
+            sum_ball=("ball","sum")
+        ).reset_index())
 
     # Merge
     merged_pitcher = pd.merge(
@@ -191,12 +204,13 @@ def pitcher_and_offense_crunch(start_year=2022,end_year=2024, only_starters=True
     for pitcher_name, subdf in tqdm(grouped_p, total=len(grouped_p)):
         subdf_res = weighted_stats_for_df(
             subdf, max_lookback_days=max_lookback_days,
-            sum_cols=["is_k", "pitches", "is_hit", "events", "launch_speed"],
+            sum_cols=["is_k", "sum_real_pitch", "is_hit", "events", "launch_speed"],
             ratio_pairs=[
                 ("is_hit","events","hit_pct"),
                 ("is_k","events","strikout_pct"),
                 ("sum_whiff","sum_swing","whiff_pct"),
-                ("sum_looking","pitches","strike_looking_pct")
+                ("sum_looking","sum_real_pitch","strike_looking_pct"),
+                ("sum_strike", "sum_ball", "strike_ball_ratio")
             ]
         )
         pitchers_dfs.append(subdf_res)
@@ -227,15 +241,17 @@ def pitcher_and_offense_crunch(start_year=2022,end_year=2024, only_starters=True
     grouped_pit_off = (
         stats_offense.groupby(["batting_team", "game_date", "game_pk"], dropna=False)
         .agg(
-            pitches=("pitch_type", "size"),
+            sum_real_pitch=("real_pitch", "sum"),
             sum_swing=("is_swing", "sum"),
             sum_whiff=("is_whiff", "sum"),
-            sum_looking=("is_strike_looking", "sum")
+            sum_looking=("is_strike_looking","sum"),
+            sum_strike=("strike","sum"),
+            sum_ball=("ball","sum")
         ).reset_index()
     )
     grouped_pit_off["contact_pct"] = 1.0 - (grouped_pit_off["sum_whiff"] / grouped_pit_off["sum_swing"])
     grouped_pit_off.loc[grouped_pit_off["sum_swing"] == 0, "contact_pct"] = np.nan
-    grouped_pit_off["strike_looking_pct"] = (grouped_pit_off["sum_looking"] / grouped_pit_off["pitches"])
+    grouped_pit_off["strike_looking_pct"] = (grouped_pit_off["sum_looking"] / grouped_pit_off["sum_real_pitch"])
 
     # Merge for offense
     merged_offense = pd.merge(
@@ -253,12 +269,13 @@ def pitcher_and_offense_crunch(start_year=2022,end_year=2024, only_starters=True
     for team_name, subdf in tqdm(grouped_o, total=len(grouped_o)):
         subdf_res = weighted_stats_for_df(
             subdf, max_lookback_days=max_lookback_days,
-            sum_cols=["is_k", "pitches", "is_hit", "events", "launch_speed"],
+            sum_cols=["is_k", "sum_real_pitch", "is_hit", "events", "launch_speed"],
             ratio_pairs=[
                 ("is_hit","events","hit_pct"),
                 ("is_k","events","strikout_pct"),
                 ("sum_whiff","sum_swing","whiff_pct"),
-                ("sum_looking","pitches","strike_looking_pct")
+                ("sum_looking","sum_real_pitch","strike_looking_pct"),
+                ("sum_strike","sum_ball","strike_ball_ratio")
             ]
         )
             # _weighted_stats_for_df(subdf, group_label=team_name, max_lookback_days=max_lookback_days))
@@ -284,6 +301,8 @@ def comparatively_speaking(
         statcast_dir="data/statcast",
         max_lookback_days=lookback
     )
+    utils.pdf(p.tail(3))
+    utils.pdf(b.tail(3))
 
     top = pd.merge(
         p[p.inning_topbot == 'Top'], b, how='left',
@@ -325,6 +344,9 @@ def comparatively_speaking(
     for stat in pitcher_positive_stats: build_matchup(stat, pitcher_invert=False, batter_invert=True)
     for stat in batter_positive_stats: build_matchup(stat, pitcher_invert=True, batter_invert=False)
 
+    print("feat")
+    utils.pdf(feat.tail(3))
+
     return feat
 
 
@@ -358,7 +380,7 @@ def clusterson(df_window, numerical_columns, categorical_columns,
         X_df = pd.DataFrame(np.hstack([X_num, X_cat]), columns=col_names, index=subset.index)
 
         # KMeans clustering
-        model = MiniBatchKMeans(n_clusters=pitch_clusters_per_type, random_state=42)
+        model = MiniBatchKMeans(n_clusters=pitch_clusters_per_type, n_init='auto', random_state=42)
         model.fit(X_df)
         labels = model.predict(X_df)
         subset['pitch_cluster'] = [f"{ptype}_{label}" for label in labels]
@@ -497,7 +519,7 @@ def run_cluster(numerical_columns, categorical_columns, lookback_days=300,
                 start_year=None, end_year=None,
                 pitch_clusters_per_type=5, pitcher_clusters=10):
 
-    lookback_yrs = 300%365
+    lookback_yrs = 300//365
     df = utils.grab_data('data/statcast', start_year - lookback_yrs, end_year)
 
     df["game_date"] = pd.to_datetime(df["game_date"])
@@ -559,32 +581,30 @@ def prep_test_train(start_year=None, end_year=None,
     feat = comparatively_speaking(
         start_year=start_year, end_year=end_year, lookback=lookback_days,
         pitcher_positive_stats=[
-            'weighted_is_k', 'weighted_whiff_pct', 'weighted_strike_looking_pct',
+            'weighted_is_k', 'weighted_whiff_pct', 'weighted_strike_looking_pct', 'weighted_strike_ball_ratio'
         ],
         batter_positive_stats=[
             'weighted_is_hit', 'weighted_launch_speed',
         ]
     ).dropna()
 
-    numerical_columns = ["release_spin_rate", "effective_speed", "pfx_x", "pfx_z", ""]
+    numerical_columns = ["release_spin_rate", "effective_speed", "pfx_x", "pfx_z", "arm_angle"]
     categorical_columns = ["p_throws"]
     feature_panel = run_cluster(
         numerical_columns, categorical_columns, lookback_days=lookback_days,
         start_year=start_year, end_year=end_year, pitcher_clusters=pitcher_clusters
     )
-    feature_panel['pitcher'] = feature_panel['player_name'].apply(lambda x: f"{x.split(', ')[1][0]}. {x.split(', ')[0]}")
-    feature_panel['game_date'] = feature_panel['feature_date'].dt.date
-
-    feat = pd.merge(feat, feature_panel[['game_date', 'pitcher', 'pitcher_cluster']], on=['game_date','pitcher'], how='left')
+    print("feature panel")
+    utils.pdf(feature_panel.tail(3))
 
     # feat = pd.read_parquet('data/calc/feat.parquet')
     # feature_panel = pd.read_parquet('data/test/feature_panel.parquet')
 
-    feature_panel['pitcher'] = feature_panel['player_name'].apply(
-        lambda x: f"{x.split(', ')[1][0]}. {x.split(', ')[0]}")
+    feature_panel['pitcher'] = feature_panel['player_name'].apply(lambda x: f"{x.split(', ')[1][0]}. {x.split(', ')[0]}")
     feature_panel['game_date'] = feature_panel['feature_date'].dt.date
-    feat = pd.merge(feat, feature_panel[['game_date', 'pitcher', 'pitcher_cluster']], on=['game_date', 'pitcher'],
-                    how='left')
+    feat = pd.merge(feat, feature_panel[['game_date', 'pitcher', 'pitcher_cluster']], on=['game_date', 'pitcher'], how='left')
+    print('feat here')
+    utils.pdf(feat.tail(3))
 
     ### get target col, strikeouts
     years = range(start_year - 1, end_year + 1)
@@ -601,12 +621,11 @@ def prep_test_train(start_year=None, end_year=None,
     stats["game_date"] = pd.to_datetime(stats["game_date"]).dt.date
 
     # Mark at-bat groupings
-    stats["is_hit"] = stats["events"].isin(["single", "double", "triple", "home_run", "inside_the_park_hr"])
     stats["is_k"] = stats["events"].isin(["strikeout"])
     grouped_events = (
         stats.dropna(subset=["events"])  # only rows w/ actual event
         .groupby(["player_name", "game_date", "p_throws", "inning_topbot", "game_pk", "home_team", "away_team"], dropna=False)
-        .agg({"is_hit":"sum","is_k":"sum","events":"count","launch_speed":"mean"}).reset_index()
+        .agg({"is_k":"sum","events":"count"}).reset_index()
     )
     grouped_events['pitcher'] = grouped_events['player_name'].apply(
         lambda x: f"{x.split(', ')[1][0]}. {x.split(', ')[0]}")
