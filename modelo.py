@@ -119,12 +119,24 @@ def main():
         start_year=start_year, end_year=end_year,
         lookback_days=lookback
     )
-    X_train.to_parquet('data/train_test/X_train.parquet')
-    y_train.to_parquet('data/train_test/y_train.parquet')
-    X_test.to_parquet('data/train_test/X_test.parquet')
-    y_test.to_parquet('data/train_test/y_test.parquet')
+    np.savez(
+        "train_test.npz",
+        X_train=X_train,
+        y_train=y_train,
+        X_test=X_test,
+        y_test=y_test
+    )
     train_df.to_parquet('data/train_test/train_df.parquet')
     test_df.to_parquet('data/train_test/test_df.parquet')
+
+    # data = np.load("mlb_data.npz")
+    # X_train = data['X_train']
+    # y_train = data['y_train']
+    # X_test = data['X_test']
+    # y_test = data['y_test']
+    #
+    # train_df = pd.read_parquet("train_df.parquet")
+    # test_df = pd.read_parquet("test_df.parquet")
 
     # model, preds, y_true = modelo_torch(X_train, y_train, X_test, y_test)
     model, preds = modelo_keras(X_train, y_train, X_test, y_test)
