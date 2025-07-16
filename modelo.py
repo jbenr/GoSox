@@ -113,14 +113,14 @@ def modelo_keras(X_train, y_train, X_test, y_test, verbose=True):
 
 
 def main():
-    start_year, end_year = 2022, 2024
+    start_year, end_year = 2022, 2025
     lookback = 300
     X_train, y_train, X_test, y_test, train_df, test_df = data_crunchski.prep_test_train(
         start_year=start_year, end_year=end_year,
         lookback_days=lookback
     )
     np.savez(
-        "train_test.npz",
+        "data/train_test.npz",
         X_train=X_train,
         y_train=y_train,
         X_test=X_test,
@@ -129,14 +129,14 @@ def main():
     train_df.to_parquet('data/train_test/train_df.parquet')
     test_df.to_parquet('data/train_test/test_df.parquet')
 
-    # data = np.load("mlb_data.npz")
+    # data = np.load("data/train_test/train_test.npz")
     # X_train = data['X_train']
     # y_train = data['y_train']
     # X_test = data['X_test']
     # y_test = data['y_test']
     #
-    # train_df = pd.read_parquet("train_df.parquet")
-    # test_df = pd.read_parquet("test_df.parquet")
+    # train_df = pd.read_parquet("data/train_test/train_df.parquet")
+    # test_df = pd.read_parquet("data/train_test/test_df.parquet")
 
     # model, preds, y_true = modelo_torch(X_train, y_train, X_test, y_test)
     model, preds = modelo_keras(X_train, y_train, X_test, y_test)
@@ -158,10 +158,12 @@ def main():
     test_df = pd.merge(test_df, odds, how='left', on=['game_date','pitcher','home_team','away_team'])[display_cols]
 
     test_df['diff'] = test_df['pred'] - test_df['consensus_ou']
-    threshold = 1.5
+    test_df['abs_diff'] = test_df['diff'].abs()
+
+    threshold = (1.8, 2.4)
     conditions = [
-        test_df['diff'] > threshold,
-        test_df['diff'] < -threshold
+        (test_df['diff'] > threshold[0]) & (test_df['diff'] < threshold[1]),
+        (test_df['diff'] < -threshold[0]) & (test_df['diff'] > -threshold[1])
     ]
     choices = ['over', 'under']
     test_df['bet'] = np.select(conditions, choices, default=None)
@@ -175,8 +177,17 @@ def main():
 
     test_df['win?'] = (test_df['bet'] == test_df['result']).astype(int)
     test_df.dropna(inplace=True, subset=['bet'])
+
     utils.pdf(test_df)
     print(test_df['win?'].sum()/len(test_df['win?']), len(test_df['win?']))
+
+    # bins
+    max_cutoff = 5
+    bucket_size = 0.2
+    bins = np.arange(0, max_cutoff + bucket_size, bucket_size)
+    test_df['mispricing_bucket'] = pd.cut(test_df['abs_diff'], bins=bins, right=False)
+    stats = test_df.groupby('mispricing_bucket',observed=True)['win?'].agg(['mean', 'count']).rename(columns={'mean': 'win_rate'})
+    utils.pdf(stats)
 
 
 if __name__ == "__main__":
