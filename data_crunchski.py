@@ -575,8 +575,8 @@ def run_cluster(numerical_columns, categorical_columns, lookback_days=300,
 
 
 def prep_test_train(start_year=None, end_year=None,
-                    lookback_days=300,
-                    pitcher_clusters=10):
+                    lookback_days=300, pitcher_clusters=10,
+                    live_mode=False, end_date=None, ):
 
     feat = comparatively_speaking(
         start_year=start_year, end_year=end_year, lookback=lookback_days,
@@ -677,22 +677,21 @@ def prep_test_train(start_year=None, end_year=None,
 
     # Step 3: Sort by date
     feat = feat.sort_values("game_date")
-    for col in feat.columns:
-        if pd.api.types.is_integer_dtype(feat[col]):
-            feat[col] = feat[col].fillna(0).astype(np.int64)
+    if live_mode:
+        assert end_date is not None, "Must provide end_date in live_mode"
+        train_df = feat[feat["game_date"] < end_date.date()]
+        test_df = feat[feat["game_date"] == end_date.date()]  # today only
+    else:
+        split_frac = 0.8
+        split_idx = int(len(feat) * split_frac)
+        train_df = feat.iloc[:split_idx]
+        test_df = feat.iloc[split_idx:]
 
-    # Step 4: Time-based split
-    split_frac = 0.8
-    split_idx = int(len(feat) * split_frac)
-
-    train_df = feat.iloc[:split_idx]
-    test_df = feat.iloc[split_idx:]
-
-    # Step 5: Build final arrays
+    # Step 4: Build final arrays
     X_train = train_df[feature_cols].values.astype(np.float32)
     y_train = train_df[target_col].values.astype(np.float32)
     X_test = test_df[feature_cols].values.astype(np.float32)
-    y_test = test_df[target_col].values.astype(np.float32)
+    y_test = test_df[target_col].values.astype(np.float32) if not live_mode else None
 
     return X_train, y_train, X_test, y_test, train_df, test_df
 
