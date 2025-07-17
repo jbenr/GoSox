@@ -141,7 +141,6 @@ def pitcher_and_offense_crunch(start_year=2022,end_year=2024, only_starters=True
     ])
     stats["is_whiff"] = stats["description"].isin(["swinging_strike", "swinging_strike_blocked", "missed_bunt"])
     stats["is_strike_looking"] = stats["description"].isin(["called_strike"])
-    utils.pdf(stats.tail(2))
 
     #############################
     # 2) PITCHER-level aggregator
@@ -301,8 +300,6 @@ def comparatively_speaking(
         statcast_dir="data/statcast",
         max_lookback_days=lookback
     )
-    utils.pdf(p.tail(3))
-    utils.pdf(b.tail(3))
 
     top = pd.merge(
         p[p.inning_topbot == 'Top'], b, how='left',
@@ -343,9 +340,6 @@ def comparatively_speaking(
 
     for stat in pitcher_positive_stats: build_matchup(stat, pitcher_invert=False, batter_invert=True)
     for stat in batter_positive_stats: build_matchup(stat, pitcher_invert=True, batter_invert=False)
-
-    print("feat")
-    utils.pdf(feat.tail(3))
 
     return feat
 
@@ -538,6 +532,7 @@ def run_cluster(numerical_columns, categorical_columns, lookback_days=300,
 
     results = []
 
+    print("Clustering pitchers...")
     for current_date in tqdm(valid_feature_dates):
         window_start = current_date - timedelta(days=lookback_days)
         window_df = df[(df["game_date"] > window_start) & (df["game_date"] <= current_date)]
@@ -594,8 +589,6 @@ def prep_test_train(start_year=None, end_year=None,
         numerical_columns, categorical_columns, lookback_days=lookback_days,
         start_year=start_year, end_year=end_year, pitcher_clusters=pitcher_clusters
     )
-    print("feature panel")
-    utils.pdf(feature_panel.tail(3))
 
     # feat = pd.read_parquet('data/calc/feat.parquet')
     # feature_panel = pd.read_parquet('data/test/feature_panel.parquet')
@@ -603,8 +596,6 @@ def prep_test_train(start_year=None, end_year=None,
     feature_panel['pitcher'] = feature_panel['player_name'].apply(lambda x: f"{x.split(', ')[1][0]}. {x.split(', ')[0]}")
     feature_panel['game_date'] = feature_panel['feature_date'].dt.date
     feat = pd.merge(feat, feature_panel[['game_date', 'pitcher', 'pitcher_cluster']], on=['game_date', 'pitcher'], how='left')
-    print('feat here')
-    utils.pdf(feat.tail(3))
 
     ### get target col, strikeouts
     years = range(start_year - 1, end_year + 1)
@@ -651,7 +642,6 @@ def prep_test_train(start_year=None, end_year=None,
 
     feat = pd.merge(feat,m,on=['game_date','game_pk','home_team','away_team','pitcher'],how='left')
     feat = pd.merge(feat,k_s,on=['game_date','game_pk','home_team','away_team','pitcher'],how='left').dropna()
-    utils.pdf(feat.tail(3))
 
     # ### sched, need sched
     # sched = []

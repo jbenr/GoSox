@@ -11,10 +11,10 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset, random_split
 
-from tensorflow import keras
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout
-import tensorflow as tf
+# from tensorflow import keras
+# from tensorflow.keras.models import Sequential
+# from tensorflow.keras.layers import Dense, Dropout
+# import tensorflow as tf
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.preprocessing import StandardScaler
 
@@ -38,7 +38,7 @@ class MLP(nn.Module):
         return self.net(x)
 
 
-def modelo_torch(X_train, y_train, X_test, y_test):
+def modelo_torch(X_train, y_train, X_test, y_test=None):
     print(f"Training model on {len(X_train)} samples with {X_train.shape[1]} features...")
 
     # 1. Feature scaling
@@ -50,16 +50,19 @@ def modelo_torch(X_train, y_train, X_test, y_test):
     X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
     y_train_tensor = torch.tensor(y_train, dtype=torch.float32).unsqueeze(-1)
     X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
-    y_test_tensor = torch.tensor(y_test, dtype=torch.float32).unsqueeze(-1)
 
-    # 3. Train/Val split
+    # 3. Train/Val split (only if there's enough data to do so)
     dataset = TensorDataset(X_train_tensor, y_train_tensor)
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32)
+    if len(dataset) >= 2:
+        train_size = int(0.8 * len(dataset))
+        val_size = len(dataset) - train_size
+        train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=32)
+        use_validation = True
+    else:
+        train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
+        use_validation = False
 
     # 4. Model & training setup
     input_size = X_train.shape[1]
@@ -68,9 +71,9 @@ def modelo_torch(X_train, y_train, X_test, y_test):
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
-    # 5. Early stopping
+    # 5. Training loop with optional early stopping
     best_val_loss = float('inf')
-    patience = 20
+    patience = 10
     patience_counter = 0
 
     for epoch in range(100):
@@ -79,41 +82,46 @@ def modelo_torch(X_train, y_train, X_test, y_test):
         for batch_X, batch_y in train_loader:
             output = model(batch_X)
             loss = criterion(output, batch_y)
-
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
-
         train_loss /= len(train_loader)
 
-        # Validation loss
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for batch_X, batch_y in val_loader:
-                val_output = model(batch_X)
-                val_loss += criterion(val_output, batch_y).item()
-        val_loss /= len(val_loader)
+        # Optional validation
+        if use_validation:
+            model.eval()
+            val_loss = 0.0
+            with torch.no_grad():
+                for batch_X, batch_y in val_loader:
+                    val_output = model(batch_X)
+                    val_loss += criterion(val_output, batch_y).item()
+            val_loss /= len(val_loader)
+
+            print(f"Epoch {epoch+1}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    print("Early stopping triggered.")
+                    break
+        else:
+            print(f"Epoch {epoch+1}: Train Loss = {train_loss:.4f}")
 
         scheduler.step()
 
-        print(f"Epoch {epoch+1}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            patience_counter = 0
-        else:
-            patience_counter += 1
-            if patience_counter >= patience:
-                print("Early stopping triggered.")
-                break
-
-    # 6. Final Evaluation
+    # 6. Inference
     model.eval()
     with torch.no_grad():
         preds = model(X_test_tensor).squeeze().numpy()
-        y_true = y_test_tensor.squeeze().numpy()
+        if y_test is not None:
+            y_test_tensor = torch.tensor(y_test, dtype=torch.float32).unsqueeze(-1)
+            y_true = y_test_tensor.squeeze().numpy()
+        else:
+            y_true = None
 
     return model, preds, y_true
 
@@ -157,9 +165,10 @@ def modelo_keras(X_train, y_train, X_test, y_test, verbose=True):
     return model, test_preds
 
 
-def collate(test_df, preds, thresh=0):
+def collate(test_df, preds, var, thresh=0):
     test_df['pred'] = preds.round(2)
-    display_cols = ['game_date', 'pitcher', 'pitch_team', 'home_team', 'away_team', 'pitch_is_home_True', 'is_k', 'pred']
+    test_df['var'] = var.round(4)
+    display_cols = ['game_date', 'pitcher', 'pitch_team', 'home_team', 'away_team', 'pitch_is_home_True', 'is_k', 'pred','var']
 
     odds = []
     for val in test_df['game_date']:
@@ -230,7 +239,7 @@ def collate(test_df, preds, thresh=0):
 def back_test(start_year=2022, end_year=2025, lookback=150, n_runs=10):
     save_path = Path(f'data/bt/backtest_{start_year}_{end_year}_{lookback}')
     save_path.mkdir(parents=True, exist_ok=True)
-    daily_save_path = save_path / "daily_preds"
+    daily_save_path = save_path / "preds"
     daily_save_path.mkdir(parents=True, exist_ok=True)
 
     # Only use files from directories 2022–2025
@@ -261,7 +270,7 @@ def back_test(start_year=2022, end_year=2025, lookback=150, n_runs=10):
             # Run model n times, store all predictions
             all_preds = []
             for i in range(n_runs):
-                model, preds, _ = modelo_torch(X_train, y_train, X_test, y_test)
+                model, preds, _ = modelo_torch(X_train, y_train, X_test, None)
                 all_preds.append(preds)
 
             all_preds = np.array(all_preds)  # shape: (n_runs, num_samples)
@@ -269,11 +278,10 @@ def back_test(start_year=2022, end_year=2025, lookback=150, n_runs=10):
             var_preds = all_preds.var(axis=0)
 
             # Add to test_df
-            test_df['mean_pred'] = mean_preds
-            test_df['var_pred'] = var_preds
+            test_df['pred'] = mean_preds
+            test_df['var'] = var_preds
 
-            # Collate and score
-            test_df = collate(test_df, mean_preds)
+            test_df = collate(test_df, mean_preds, var_preds)
 
             # Save
             test_df.to_parquet(output_path)
@@ -319,10 +327,25 @@ def main():
     train_df = pd.read_parquet("data/train_test/train_df.parquet")
     test_df = pd.read_parquet("data/train_test/test_df.parquet")
 
-    model, preds, y_true = modelo_torch(X_train, y_train, X_test, y_test)
+    n_runs = 3
+    all_preds = []
+    for i in range(n_runs):
+        model, preds, _ = modelo_torch(X_train, y_train, X_test, y_test)
+        all_preds.append(preds)
+
+    all_preds = np.array(all_preds)  # shape: (n_runs, num_samples)
+    mean_preds = all_preds.mean(axis=0)
+    var_preds = all_preds.var(axis=0)
+
+    # Add to test_df
+    test_df['mean_pred'] = mean_preds
+    test_df['var_pred'] = var_preds
+    utils.pdf(test_df.tail(5))
+
+    # model, preds, y_true = modelo_torch(X_train, y_train, X_test, y_test)
     # model, preds = modelo_keras(X_train, y_train, X_test, y_test)
 
-    test_df = collate(test_df, preds)
+    test_df = collate(test_df, mean_preds, var_preds)
 
 
 
