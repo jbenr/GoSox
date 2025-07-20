@@ -110,6 +110,7 @@ def live_mlb_pitcher_k_props():
                     })
 
     props_df = pd.DataFrame(all_props)
+    utils.pdf(props_df)
 
     print("\nRequests remaining:", r_props.headers.get("x-requests-remaining"))
     print("Requests used:", r_props.headers.get("x-requests-used"))

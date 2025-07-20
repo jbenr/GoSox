@@ -38,20 +38,23 @@ class MLP(nn.Module):
         return self.net(x)
 
 
-def modelo_torch(X_train, y_train, X_test, y_test=None):
+def modelo_torch(X_train, y_train, X_test, y_test, X_pred):
     print(f"Training model on {len(X_train)} samples with {X_train.shape[1]} features...")
 
     # 1. Feature scaling
     scaler = StandardScaler()
     X_train = scaler.fit_transform(X_train)
     X_test = scaler.transform(X_test)
+    X_pred = scaler.transform(X_pred)
 
     # 2. Convert to tensors
     X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
     y_train_tensor = torch.tensor(y_train, dtype=torch.float32).unsqueeze(-1)
     X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
+    y_test_tensor = torch.tensor(y_test, dtype=torch.float32).unsqueeze(-1)
+    X_pred_tensor = torch.tensor(X_pred, dtype=torch.float32)
 
-    # 3. Train/Val split (only if there's enough data to do so)
+    # 3. Train/Val split (only if enabled and enough data)
     dataset = TensorDataset(X_train_tensor, y_train_tensor)
     if len(dataset) >= 2:
         train_size = int(0.8 * len(dataset))
@@ -59,10 +62,8 @@ def modelo_torch(X_train, y_train, X_test, y_test=None):
         train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
         train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=32)
-        use_validation = True
     else:
         train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
-        use_validation = False
 
     # 4. Model & training setup
     input_size = X_train.shape[1]
@@ -89,27 +90,24 @@ def modelo_torch(X_train, y_train, X_test, y_test=None):
         train_loss /= len(train_loader)
 
         # Optional validation
-        if use_validation:
-            model.eval()
-            val_loss = 0.0
-            with torch.no_grad():
-                for batch_X, batch_y in val_loader:
-                    val_output = model(batch_X)
-                    val_loss += criterion(val_output, batch_y).item()
-            val_loss /= len(val_loader)
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for batch_X, batch_y in val_loader:
+                val_output = model(batch_X)
+                val_loss += criterion(val_output, batch_y).item()
+        val_loss /= len(val_loader)
 
-            print(f"Epoch {epoch+1}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
+        print(f"Epoch {epoch+1}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= patience:
-                    print("Early stopping triggered.")
-                    break
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
         else:
-            print(f"Epoch {epoch+1}: Train Loss = {train_loss:.4f}")
+            patience_counter += 1
+            if patience_counter >= patience:
+                print("Early stopping triggered.")
+                break
 
         scheduler.step()
 
@@ -117,13 +115,11 @@ def modelo_torch(X_train, y_train, X_test, y_test=None):
     model.eval()
     with torch.no_grad():
         preds = model(X_test_tensor).squeeze().numpy()
-        if y_test is not None:
-            y_test_tensor = torch.tensor(y_test, dtype=torch.float32).unsqueeze(-1)
-            y_true = y_test_tensor.squeeze().numpy()
-        else:
-            y_true = None
+        y_true = y_test_tensor.squeeze().numpy()
 
-    return model, preds, y_true
+        pred = model(X_pred_tensor).squeeze().numpy()
+
+    return model, preds, y_true, pred
 
 
 def modelo_keras(X_train, y_train, X_test, y_test, verbose=True):
@@ -208,10 +204,7 @@ def collate(test_df, preds, var, thresh=0):
             ((test_df['bet'] == 'over') & test_df['consensus_over_odds'].astype(str).str.contains('\+')) |
             ((test_df['bet'] == 'under') & test_df['consensus_under_odds'].astype(str).str.contains('\+'))
     )
-
     test_df.dropna(inplace=True, subset=['bet'])
-    test_df_dog = test_df[test_df['plus_odds_bet'] == True]
-    test_df_fav = test_df[test_df['plus_odds_bet'] == False]
 
     utils.pdf(test_df)
     print("Overall:")
@@ -252,7 +245,7 @@ def back_test(start_year=2022, end_year=2025, lookback=150, n_runs=10):
         try:
             date_str = "_".join(file_path.stem.split("_")[-3:])
             target_date = datetime.strptime(date_str, "%m_%d_%Y")
-            print(target_date)
+            print(target_date.strftime('%Y-%m-%d'))
 
             output_path = daily_save_path / f"preds_{target_date.strftime('%Y-%m-%d')}.parquet"
             if output_path.exists():
@@ -261,30 +254,31 @@ def back_test(start_year=2022, end_year=2025, lookback=150, n_runs=10):
 
             start_year_bt = (target_date - timedelta(days=lookback + 1)).year
             end_year_bt = target_date.year
-            X_train, y_train, X_test, _, train_df, test_df = data_crunchski.prep_test_train(
+            X_train, y_train, X_test, y_test, train_df, test_df, X_pred, pred_df = data_crunchski.prep_test_train(
                 start_year=start_year_bt, end_year=end_year_bt,
                 lookback_days=lookback,
                 live_mode=True, end_date=target_date
             )
+            utils.pdf(pred_df)
 
             # Run model n times, store all predictions
             all_preds = []
             for i in range(n_runs):
-                model, preds, _ = modelo_torch(X_train, y_train, X_test, None)
-                all_preds.append(preds)
+                model, preds, y_true, pred = modelo_torch(X_train, y_train, X_test, y_test, X_pred)
+                all_preds.append(pred)
 
             all_preds = np.array(all_preds)  # shape: (n_runs, num_samples)
             mean_preds = all_preds.mean(axis=0)
             var_preds = all_preds.var(axis=0)
 
             # Add to test_df
-            test_df['pred'] = mean_preds
-            test_df['var'] = var_preds
+            pred_df['pred'] = mean_preds
+            pred_df['var'] = var_preds
 
-            test_df = collate(test_df, mean_preds, var_preds)
+            pred_df = collate(pred_df, mean_preds, var_preds)
 
             # Save
-            test_df.to_parquet(output_path)
+            pred_df.to_parquet(output_path)
             print(f"✅ Saved predictions for {target_date.date()}")
 
         except Exception as e:

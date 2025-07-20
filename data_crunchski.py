@@ -104,7 +104,7 @@ def weighted_stats_for_df(df, max_lookback_days=300, sum_cols=None, ratio_pairs=
 def pitcher_and_offense_crunch(start_year=2022,end_year=2024, only_starters=True,
                                statcast_dir="data/statcast", max_lookback_days=300):
     ### Data Pull ###
-    yrs_lookback = max_lookback_days//365
+    yrs_lookback = 1+(max_lookback_days//365)
     years = range(start_year - yrs_lookback, end_year + 1)
     all_stats = []
     for yr in years:
@@ -590,9 +590,6 @@ def prep_test_train(start_year=None, end_year=None,
         start_year=start_year, end_year=end_year, pitcher_clusters=pitcher_clusters
     )
 
-    # feat = pd.read_parquet('data/calc/feat.parquet')
-    # feature_panel = pd.read_parquet('data/test/feature_panel.parquet')
-
     feature_panel['pitcher'] = feature_panel['player_name'].apply(lambda x: f"{x.split(', ')[1][0]}. {x.split(', ')[0]}")
     feature_panel['game_date'] = feature_panel['feature_date'].dt.date
     feat = pd.merge(feat, feature_panel[['game_date', 'pitcher', 'pitcher_cluster']], on=['game_date', 'pitcher'], how='left')
@@ -665,25 +662,33 @@ def prep_test_train(start_year=None, end_year=None,
     ]
     feature_cols = [col for col in feat.columns if col not in drop_cols + [target_col]]
 
+    print(end_date.date())
+    utils.pdf(feat[feature_cols].tail(3))
+
     # Step 3: Sort by date
     feat = feat.sort_values("game_date")
     if live_mode:
         assert end_date is not None, "Must provide end_date in live_mode"
-        train_df = feat[feat["game_date"] < end_date.date()]
-        test_df = feat[feat["game_date"] == end_date.date()]  # today only
+        split_frac = 0.8
+        split_idx = int(len(feat) * split_frac)
+        train_df = feat[feat["game_date"] < end_date.date()].iloc[:split_idx]
+        test_df = feat[feat["game_date"] < end_date.date()].iloc[split_idx:]
+        pred_df = feat[feat["game_date"] == end_date.date()]  # today only
     else:
         split_frac = 0.8
         split_idx = int(len(feat) * split_frac)
         train_df = feat.iloc[:split_idx]
         test_df = feat.iloc[split_idx:]
+        pred_df = None
 
     # Step 4: Build final arrays
     X_train = train_df[feature_cols].values.astype(np.float32)
     y_train = train_df[target_col].values.astype(np.float32)
     X_test = test_df[feature_cols].values.astype(np.float32)
-    y_test = test_df[target_col].values.astype(np.float32) if not live_mode else None
+    y_test = test_df[target_col].values.astype(np.float32)
+    X_pred = pred_df[feature_cols].values.astype(np.float32)
 
-    return X_train, y_train, X_test, y_test, train_df, test_df
+    return X_train, y_train, X_test, y_test, train_df, test_df, X_pred, pred_df
 
 
 if __name__ == "__main__":
