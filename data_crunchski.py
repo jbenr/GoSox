@@ -9,6 +9,7 @@ from tqdm import tqdm
 import utils
 from sklearn.cluster import KMeans, MiniBatchKMeans
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from datetime import datetime
 
 
 def convert_statcast_name(name):
@@ -696,9 +697,41 @@ if __name__ == "__main__":
     # plot_weight_decay()  # see the logistic shape
 
     start_year, end_year = 2022, 2025
-    lookback = 300
+    lookback = 150
 
-    prep_test_train(
-        start_year=start_year, end_year=end_year,
-        lookback_days=lookback, pitcher_clusters=16
+    # prep_test_train(
+    #     start_year=start_year, end_year=end_year,
+    #     lookback_days=lookback, pitcher_clusters=16
+    # )
+
+    from pathlib import Path
+
+    odds_dirs = [Path(f"data/strikeout_odds/{y}") for y in range(start_year, end_year + 1)]
+    all_odds_files = sorted(f for d in odds_dirs if d.exists() for f in d.glob("strikeout_odds_*.parquet"))
+    file_path = all_odds_files[0]
+    date_str = "_".join(file_path.stem.split("_")[-3:])
+    target_date = datetime.strptime(date_str, "%m_%d_%Y")
+
+    print("Target date:", target_date.strftime('%Y-%m-%d'))
+
+    start_year_bt = (target_date - timedelta(days=lookback + 1)).year
+    end_year_bt = target_date.year
+    X_train, y_train, X_test, y_test, train_df, test_df, X_pred, pred_df = prep_test_train(
+        start_year=start_year_bt, end_year=end_year_bt,
+        lookback_days=lookback,
+        live_mode=True, end_date=target_date
     )
+
+    save_path = Path(f'data/bt/backtest_{start_year}_{end_year}_{lookback}')
+    daily_save_path = save_path / "dat"
+    output_path = daily_save_path / f"dat_{target_date.strftime('%Y-%m-%d')}.npz"
+    np.savez(
+        output_path,
+        X_train=X_train,
+        y_train=y_train,
+        X_test=X_test,
+        y_test=y_test,
+        X_pred=X_pred
+    )
+
+    utils.pdf(pred_df)
