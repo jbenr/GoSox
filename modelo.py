@@ -3,6 +3,7 @@ import numpy as np
 from datetime import datetime
 from pathlib import Path
 from datetime import timedelta
+import traceback
 
 import data_crunchski
 import utils
@@ -222,6 +223,7 @@ def collate(test_df, preds, var, thresh=0):
     bucket_size = 0.1
     bins = np.arange(0, max_cutoff + bucket_size, bucket_size)
     test_df['mispricing_bucket'] = pd.cut(test_df['abs_diff'], bins=bins, right=False)
+    test_df['mispricing_bucket'] = test_df['mispricing_bucket'].astype(str)
     stats = test_df.groupby(['plus_odds_bet', 'mispricing_bucket'], observed=True)['win?'].agg(
         ['mean', 'count']).rename(columns={'mean': 'win_rate'}).reset_index()
     utils.pdf(stats)
@@ -229,11 +231,21 @@ def collate(test_df, preds, var, thresh=0):
     return test_df
 
 
-def back_test(start_year=2022, end_year=2025, lookback=150, n_runs=10):
+def back_test(start_year=2022, end_year=2025, lookback=150, n_runs=10, resume_from_latest=True):
     save_path = Path(f'data/bt/backtest_{start_year}_{end_year}_{lookback}')
     save_path.mkdir(parents=True, exist_ok=True)
     daily_save_path = save_path / "preds"
     daily_save_path.mkdir(parents=True, exist_ok=True)
+
+    # Determine the latest processed date if resuming
+    latest_date = None
+    if resume_from_latest:
+        pred_files = sorted(daily_save_path.glob("preds_*.parquet"))
+        if pred_files:
+            latest_pred_file = pred_files[-1]
+            latest_date_str = latest_pred_file.stem.split("_")[-1]  # 'YYYY-MM-DD'
+            latest_date = datetime.strptime(latest_date_str, "%Y-%m-%d")
+            print(f"⏩ Resuming from {latest_date} (skipping older dates)")
 
     # Only use files from directories 2022–2025
     odds_dirs = [Path(f"data/strikeout_odds/{y}") for y in range(start_year, end_year + 1)]
@@ -245,20 +257,23 @@ def back_test(start_year=2022, end_year=2025, lookback=150, n_runs=10):
         try:
             date_str = "_".join(file_path.stem.split("_")[-3:])
             target_date = datetime.strptime(date_str, "%m_%d_%Y")
-            print(target_date.strftime('%Y-%m-%d'))
+            output_path = daily_save_path / f"preds_{target_date.date()}.parquet"
 
-            output_path = daily_save_path / f"preds_{target_date.strftime('%Y-%m-%d')}.parquet"
-            if output_path.exists():
-                print(f"✔ Skipping {target_date.date()} (already processed)")
+            # Skip dates older than the latest processed date
+            if resume_from_latest and latest_date and target_date <= latest_date:
+                print(f"✔ Skipping {target_date.date()} (before or equal to latest saved date)")
                 continue
 
-            start_year_bt = (target_date - timedelta(days=lookback + 1)).year
+            print(target_date.date())
+
+            start_year_bt = (datetime.combine(target_date, datetime.min.time()) - timedelta(days=lookback + 1)).year
             end_year_bt = target_date.year
             X_train, y_train, X_test, y_test, train_df, test_df, X_pred, pred_df = data_crunchski.prep_test_train(
                 start_year=start_year_bt, end_year=end_year_bt,
                 lookback_days=lookback,
                 live_mode=True, end_date=target_date
             )
+            utils.pdf(test_df.tail(3))
             utils.pdf(pred_df)
 
             # Run model n times, store all predictions
@@ -274,15 +289,15 @@ def back_test(start_year=2022, end_year=2025, lookback=150, n_runs=10):
             # Add to test_df
             pred_df['pred'] = mean_preds
             pred_df['var'] = var_preds
-
             pred_df = collate(pred_df, mean_preds, var_preds)
 
             # Save
             pred_df.to_parquet(output_path)
-            print(f"✅ Saved predictions for {target_date.date()}")
+            print(f"✅ Saved predictions for {target_date}")
 
         except Exception as e:
-            print(f"❌ Error on {target_date.date()}: {e}")
+            print(f"❌ Error on {target_date}: {e}")
+            traceback.print_exc()
             continue
 
     # Final collation
@@ -293,6 +308,7 @@ def back_test(start_year=2022, end_year=2025, lookback=150, n_runs=10):
         print(f"\n✅ Backtest complete! Final file saved to {save_path}/backtest_all.parquet")
     else:
         print("\n❌ No valid prediction files found to collate.")
+
 
 
 def main():

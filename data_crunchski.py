@@ -10,6 +10,7 @@ import utils
 from sklearn.cluster import KMeans, MiniBatchKMeans
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from datetime import datetime
+from pathlib import Path
 
 
 def convert_statcast_name(name):
@@ -278,7 +279,6 @@ def pitcher_and_offense_crunch(start_year=2022,end_year=2024, only_starters=True
                 ("sum_strike","sum_ball","strike_ball_ratio")
             ]
         )
-            # _weighted_stats_for_df(subdf, group_label=team_name, max_lookback_days=max_lookback_days))
         offense_dfs.append(subdf_res)
     roll_df_offense = pd.concat(offense_dfs, ignore_index=True)
 
@@ -514,7 +514,7 @@ def run_cluster(numerical_columns, categorical_columns, lookback_days=300,
                 start_year=None, end_year=None,
                 pitch_clusters_per_type=5, pitcher_clusters=10):
 
-    lookback_yrs = 300//365
+    lookback_yrs = 1+(300//365)
     df = utils.grab_data('data/statcast', start_year - lookback_yrs, end_year)
 
     df["game_date"] = pd.to_datetime(df["game_date"])
@@ -572,7 +572,7 @@ def run_cluster(numerical_columns, categorical_columns, lookback_days=300,
 
 def prep_test_train(start_year=None, end_year=None,
                     lookback_days=300, pitcher_clusters=10,
-                    live_mode=False, end_date=None, ):
+                    live_mode=False, end_date=None):
 
     feat = comparatively_speaking(
         start_year=start_year, end_year=end_year, lookback=lookback_days,
@@ -583,6 +583,7 @@ def prep_test_train(start_year=None, end_year=None,
             'weighted_is_hit', 'weighted_launch_speed',
         ]
     ).dropna()
+    feat.sort_values(by='game_date', inplace=True)
 
     numerical_columns = ["release_spin_rate", "effective_speed", "pfx_x", "pfx_z", "arm_angle"]
     categorical_columns = ["p_throws"]
@@ -641,13 +642,6 @@ def prep_test_train(start_year=None, end_year=None,
     feat = pd.merge(feat,m,on=['game_date','game_pk','home_team','away_team','pitcher'],how='left')
     feat = pd.merge(feat,k_s,on=['game_date','game_pk','home_team','away_team','pitcher'],how='left').dropna()
 
-    # ### sched, need sched
-    # sched = []
-    # for i in range(feat['game_date'].min().year, feat['game_date'].max().year+1):
-    #     sched += [pd.read_csv(f'data/sched/{i}schedule.csv')]
-    # sched = pd.concat(sched)
-    # utils.pdf(sched.tail(10))
-
     # Set your target and feature columns
     target_col = 'is_k'
 
@@ -662,25 +656,22 @@ def prep_test_train(start_year=None, end_year=None,
         'bat_team', 'game_type'
     ]
     feature_cols = [col for col in feat.columns if col not in drop_cols + [target_col]]
+    feat['game_date'] = pd.to_datetime(feat['game_date']).dt.date
 
-    print(end_date.date())
-    utils.pdf(feat[feature_cols].tail(3))
-
-    # Step 3: Sort by date
-    feat = feat.sort_values("game_date")
     if live_mode:
         assert end_date is not None, "Must provide end_date in live_mode"
+        pred_df = feat[feat["game_date"] == end_date.date()]  # today only
+        feat = feat[feat["game_date"] < end_date.date()]
         split_frac = 0.8
         split_idx = int(len(feat) * split_frac)
         train_df = feat[feat["game_date"] < end_date.date()].iloc[:split_idx]
         test_df = feat[feat["game_date"] < end_date.date()].iloc[split_idx:]
-        pred_df = feat[feat["game_date"] == end_date.date()]  # today only
     else:
+        pred_df = None
         split_frac = 0.8
         split_idx = int(len(feat) * split_frac)
         train_df = feat.iloc[:split_idx]
         test_df = feat.iloc[split_idx:]
-        pred_df = None
 
     # Step 4: Build final arrays
     X_train = train_df[feature_cols].values.astype(np.float32)
@@ -704,8 +695,6 @@ if __name__ == "__main__":
     #     lookback_days=lookback, pitcher_clusters=16
     # )
 
-    from pathlib import Path
-
     odds_dirs = [Path(f"data/strikeout_odds/{y}") for y in range(start_year, end_year + 1)]
     all_odds_files = sorted(f for d in odds_dirs if d.exists() for f in d.glob("strikeout_odds_*.parquet"))
     file_path = all_odds_files[0]
@@ -713,6 +702,11 @@ if __name__ == "__main__":
     target_date = datetime.strptime(date_str, "%m_%d_%Y")
 
     print("Target date:", target_date.strftime('%Y-%m-%d'))
+
+    save_path = Path(f'data/bt/backtest_{start_year}_{end_year}_{lookback}')
+    daily_save_path = save_path / "dat"
+    daily_save_path.mkdir(parents=True, exist_ok=True)
+    output_path = daily_save_path / f"dat_{target_date.strftime('%Y-%m-%d')}.npz"
 
     start_year_bt = (target_date - timedelta(days=lookback + 1)).year
     end_year_bt = target_date.year
@@ -722,9 +716,6 @@ if __name__ == "__main__":
         live_mode=True, end_date=target_date
     )
 
-    save_path = Path(f'data/bt/backtest_{start_year}_{end_year}_{lookback}')
-    daily_save_path = save_path / "dat"
-    output_path = daily_save_path / f"dat_{target_date.strftime('%Y-%m-%d')}.npz"
     np.savez(
         output_path,
         X_train=X_train,
@@ -733,5 +724,22 @@ if __name__ == "__main__":
         y_test=y_test,
         X_pred=X_pred
     )
+    train_df.to_parquet(daily_save_path / f"train_df_{target_date.strftime('%Y-%m-%d')}.parquet")
+    test_df.to_parquet(daily_save_path / f"test_df_{target_date.strftime('%Y-%m-%d')}.parquet")
+    pred_df.to_parquet(daily_save_path / f"pred_df_{target_date.strftime('%Y-%m-%d')}.parquet")
 
-    utils.pdf(pred_df)
+    # data = np.load(output_path)
+    # X_train = data['X_train']
+    # y_train = data['y_train']
+    # X_test = data['X_test']
+    # y_test = data['y_test']
+    # X_pred = data['X_pred']
+    # train_df = pd.read_parquet(daily_save_path / f"train_df_{target_date.strftime('%Y-%m-%d')}.parquet")
+    # test_df = pd.read_parquet(daily_save_path / f"test_df_{target_date.strftime('%Y-%m-%d')}.parquet")
+    # pred_df = pd.read_parquet(daily_save_path / f"pred_df_{target_date.strftime('%Y-%m-%d')}.parquet")
+
+    print(train_df.head(3))
+    print(train_df.tail(3))
+    print(test_df.head(3))
+    print(test_df.tail(3))
+    print(pred_df)
